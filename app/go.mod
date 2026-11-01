@@ -6,7 +6,7 @@ require (
 	github.com/apernet/go-tproxy v0.0.0-20230809025308-8f4723fd742f
 	github.com/apernet/hysteria/core/v2 v2.0.0-00010101000000-000000000000
 	github.com/apernet/hysteria/extras/v2 v2.0.0-00010101000000-000000000000
-	github.com/caddyserver/certmagic v0.25.4
+	github.com/caddyserver/certmagic v0.25.6
 	github.com/libdns/cloudflare v0.2.2
 	github.com/libdns/duckdns v0.3.0
 	github.com/libdns/gandi v1.1.0
@@ -16,7 +16,7 @@ require (
 	github.com/libdns/porkbun v1.1.0
 	github.com/libdns/vultr/v2 v2.0.4
 	github.com/mdp/qrterminal/v3 v3.2.1
-	github.com/mholt/acmez/v3 v3.1.6
+	github.com/mholt/acmez/v3 v3.1.7
 	github.com/sagernet/sing v0.8.12-0.20260717023913-84ab32b56cb8
 	github.com/sagernet/sing-tun v0.9.6
 	github.com/spf13/cobra v1.10.2
@@ -25,14 +25,14 @@ require (
 	github.com/txthinking/socks5 v0.0.0-20230325130024-4230056ae301
 	go.uber.org/zap v1.28.0
 	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc
-	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c // indirect
-	github.com/caddyserver/zerossl v0.1.5 // indirect
+	github.com/caddyserver/zerossl v0.1.6 // indirect
 	github.com/database64128/netx-go v0.1.1 // indirect
 	github.com/database64128/tfo-go/v2 v2.3.3 // indirect
 	github.com/florianl/go-nfqueue/v2 v2.1.0 // indirect
@@ -50,14 +50,14 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/libp2p/go-nat v1.0.1-0.20250821073202-01afc089f138 // indirect
 	github.com/libp2p/go-netroute v0.2.1 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
+	github.com/miekg/dns v1.1.73 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pion/dtls/v3 v3.1.4 // indirect
@@ -85,14 +85,12 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
