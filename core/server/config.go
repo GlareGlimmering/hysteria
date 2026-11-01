@@ -32,6 +32,7 @@ type Config struct {
 	Cleanup               io.Closer
 	RequestHook           RequestHook
 	Outbound              Outbound
+	OutboundSelector      OutboundSelector
 	CongestionConfig      CongestionConfig
 	BandwidthConfig       BandwidthConfig
 	IgnoreClientBandwidth bool
@@ -167,6 +168,14 @@ type Outbound interface {
 	CheckUDP(reqAddr string) error
 }
 
+// OutboundSelector selects one immutable outbound for an authenticated
+// connection. Returning ok=false rejects the authenticated identity instead of
+// falling back to Config.Outbound. Implementations must be safe for concurrent
+// use by multiple client connections.
+type OutboundSelector interface {
+	Select(authID string) (name string, outbound Outbound, ok bool)
+}
+
 // UDPConn is like net.PacketConn, but uses string for addresses.
 type UDPConn interface {
 	ReadFrom(b []byte) (int, string, error)
@@ -237,6 +246,16 @@ type EventLogger interface {
 	TCPError(addr net.Addr, id, reqAddr string, err error)
 	UDPRequest(addr net.Addr, id string, sessionID uint32, reqAddr string)
 	UDPError(addr net.Addr, id string, sessionID uint32, err error)
+}
+
+// OutboundEventLogger is an optional extension that records the actual
+// connection-level outbound without breaking existing EventLogger
+// implementations.
+type OutboundEventLogger interface {
+	TCPRequestOutbound(addr net.Addr, id, reqAddr, outbound string)
+	TCPErrorOutbound(addr net.Addr, id, reqAddr, outbound string, err error)
+	UDPRequestOutbound(addr net.Addr, id string, sessionID uint32, reqAddr, outbound string)
+	UDPErrorOutbound(addr net.Addr, id string, sessionID uint32, outbound string, err error)
 }
 
 type HyStream interface {

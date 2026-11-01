@@ -91,6 +91,7 @@ type serverConfig struct {
 	Sniff                 serverConfigSniff           `mapstructure:"sniff"`
 	ACL                   serverConfigACL             `mapstructure:"acl"`
 	Outbounds             []serverConfigOutboundEntry `mapstructure:"outbounds"`
+	UserOutbounds         map[string]string           `mapstructure:"userOutbounds"`
 	TrafficStats          serverConfigTrafficStats    `mapstructure:"trafficStats"`
 	Masquerade            serverConfigMasquerade      `mapstructure:"masquerade"`
 }
@@ -275,6 +276,23 @@ type serverConfigOutboundEntry struct {
 	Direct serverConfigOutboundDirect `mapstructure:"direct"`
 	SOCKS5 serverConfigOutboundSOCKS5 `mapstructure:"socks5"`
 	HTTP   serverConfigOutboundHTTP   `mapstructure:"http"`
+}
+
+type staticUserOutboundSelector struct {
+	bindings  map[string]string
+	outbounds map[string]server.Outbound
+}
+
+func (s *staticUserOutboundSelector) Select(authID string) (string, server.Outbound, bool) {
+	name, ok := s.bindings[authID]
+	if !ok {
+		return "", nil, false
+	}
+	outbound, ok := s.outbounds[strings.ToLower(name)]
+	if !ok {
+		return "", nil, false
+	}
+	return name, outbound, true
 }
 
 type serverConfigTrafficStats struct {
@@ -1330,6 +1348,15 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 			obs[i] = outbounds.OutboundEntry{Name: entry.Name, Outbound: ob}
 		}
 	}
+	if len(c.UserOutbounds) > 0 {
+		if c.ACL.File != "" || len(c.ACL.Inline) > 0 {
+			return configError{Field: "userOutbounds", Err: errors.New("cannot combine user outbound routing with ACL")}
+		}
+		resolverType := strings.ToLower(c.Resolver.Type)
+		if resolverType != "" && resolverType != "system" {
+			return configError{Field: "userOutbounds", Err: errors.New("custom resolver is not supported with user outbound routing")}
+		}
+	}
 
 	var uOb outbounds.PluggableOutbound // "unified" outbound
 
@@ -1403,6 +1430,31 @@ func (c *serverConfig) fillOutboundConfig(hyConfig *server.Config) error {
 	}
 
 	hyConfig.Outbound = &outbounds.PluggableOutboundAdapter{PluggableOutbound: uOb}
+	if len(c.UserOutbounds) > 0 {
+		named := make(map[string]server.Outbound, len(obs))
+		canonical := make(map[string]string, len(obs))
+		for _, entry := range obs {
+			key := strings.ToLower(entry.Name)
+			if _, exists := named[key]; exists {
+				return configError{Field: "outbounds.name", Err: fmt.Errorf("duplicate outbound name %q", entry.Name)}
+			}
+			named[key] = &outbounds.PluggableOutboundAdapter{PluggableOutbound: entry.Outbound}
+			canonical[key] = entry.Name
+		}
+		bindings := make(map[string]string, len(c.UserOutbounds))
+		for authID, requestedName := range c.UserOutbounds {
+			if authID == "" {
+				return configError{Field: "userOutbounds", Err: errors.New("empty auth ID")}
+			}
+			key := strings.ToLower(requestedName)
+			name, exists := canonical[key]
+			if !exists {
+				return configError{Field: "userOutbounds", Err: fmt.Errorf("unknown outbound %q for auth ID %q", requestedName, authID)}
+			}
+			bindings[authID] = name
+		}
+		hyConfig.OutboundSelector = &staticUserOutboundSelector{bindings: bindings, outbounds: named}
+	}
 	return nil
 }
 
@@ -1821,6 +1873,18 @@ func (l *serverLogger) TCPError(addr net.Addr, id, reqAddr string, err error) {
 	}
 }
 
+func (l *serverLogger) TCPRequestOutbound(addr net.Addr, id, reqAddr, outbound string) {
+	logger.Debug("TCP request", zap.String("addr", addr.String()), zap.String("id", id), zap.String("reqAddr", reqAddr), zap.String("outbound", outbound))
+}
+
+func (l *serverLogger) TCPErrorOutbound(addr net.Addr, id, reqAddr, outbound string, err error) {
+	if err == nil {
+		logger.Debug("TCP closed", zap.String("addr", addr.String()), zap.String("id", id), zap.String("reqAddr", reqAddr), zap.String("outbound", outbound))
+	} else {
+		logger.Warn("TCP error", zap.String("addr", addr.String()), zap.String("id", id), zap.String("reqAddr", reqAddr), zap.String("outbound", outbound), zap.Error(err))
+	}
+}
+
 func (l *serverLogger) UDPRequest(addr net.Addr, id string, sessionID uint32, reqAddr string) {
 	logger.Debug("UDP request", zap.String("addr", addr.String()), zap.String("id", id), zap.Uint32("sessionID", sessionID), zap.String("reqAddr", reqAddr))
 }
@@ -1830,6 +1894,18 @@ func (l *serverLogger) UDPError(addr net.Addr, id string, sessionID uint32, err 
 		logger.Debug("UDP closed", zap.String("addr", addr.String()), zap.String("id", id), zap.Uint32("sessionID", sessionID))
 	} else {
 		logger.Warn("UDP error", zap.String("addr", addr.String()), zap.String("id", id), zap.Uint32("sessionID", sessionID), zap.Error(err))
+	}
+}
+
+func (l *serverLogger) UDPRequestOutbound(addr net.Addr, id string, sessionID uint32, reqAddr, outbound string) {
+	logger.Debug("UDP request", zap.String("addr", addr.String()), zap.String("id", id), zap.Uint32("sessionID", sessionID), zap.String("reqAddr", reqAddr), zap.String("outbound", outbound))
+}
+
+func (l *serverLogger) UDPErrorOutbound(addr net.Addr, id string, sessionID uint32, outbound string, err error) {
+	if err == nil {
+		logger.Debug("UDP closed", zap.String("addr", addr.String()), zap.String("id", id), zap.Uint32("sessionID", sessionID), zap.String("outbound", outbound))
+	} else {
+		logger.Warn("UDP error", zap.String("addr", addr.String()), zap.String("id", id), zap.Uint32("sessionID", sessionID), zap.String("outbound", outbound), zap.Error(err))
 	}
 }
 

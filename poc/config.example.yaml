@@ -1,0 +1,35 @@
+listen: :24443
+
+tls:
+  cert: /var/lib/h-ui/hy2-poc/certs/server.crt
+  key: /var/lib/h-ui/hy2-poc/certs/server.key
+
+auth:
+  type: http
+  http:
+    url: http://127.0.0.1:18081/auth
+    insecure: false
+
+outbounds:
+  - name: DIRECT
+    type: direct
+    direct:
+      mode: auto
+  - name: TM_NET_1
+    type: socks5
+    socks5:
+      addr: 127.0.0.1:10808
+
+userOutbounds:
+  test_direct: DIRECT
+  test_tm1: TM_NET_1
+
+trafficStats:
+  listen: 127.0.0.1:19999
+  secret: replace-with-an-isolated-test-secret
+
+masquerade:
+  type: string
+  string:
+    content: Not Found
+    statusCode: 404

@@ -147,6 +147,8 @@ type h3sHandler struct {
 	authenticated bool
 	authMutex     sync.Mutex
 	authID        string
+	outbound      Outbound
+	outboundName  string
 	connID        uint32 // a random id for dump streams
 
 	udpSM *udpSessionManager // Only set after authentication
@@ -154,9 +156,11 @@ type h3sHandler struct {
 
 func newH3sHandler(config *Config, conn *quic.Conn) *h3sHandler {
 	return &h3sHandler{
-		config: config,
-		conn:   conn,
-		connID: rand.Uint32(),
+		config:       config,
+		conn:         conn,
+		outbound:     config.Outbound,
+		outboundName: "default",
+		connID:       rand.Uint32(),
 	}
 }
 
@@ -177,6 +181,9 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authReq := protocol.AuthRequestFromHeader(r.Header)
 		actualTx := authReq.Rx
 		ok, id := h.config.Authenticator.Authenticate(h.conn.RemoteAddr(), authReq.Auth, actualTx)
+		if ok && !h.selectOutbound(id) {
+			ok = false
+		}
 		if ok {
 			// Set authenticated flag
 			h.authenticated = true
@@ -219,8 +226,8 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !h.config.DisableUDP {
 				go func() {
 					sm := newUDPSessionManager(
-						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.config.Outbound},
-						&udpEventLoggerImpl{h.conn, id, h.config.EventLogger},
+						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.outbound},
+						&udpEventLoggerImpl{h.conn, id, h.outboundName, h.config.EventLogger},
 						h.config.UDPIdleTimeout,
 					)
 					h.udpSM = sm
@@ -235,6 +242,21 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Not an auth request, pretend to be a normal HTTP server
 		h.masqHandler(w, r)
 	}
+}
+
+func (h *h3sHandler) selectOutbound(authID string) bool {
+	if h.config.OutboundSelector == nil {
+		return h.outbound != nil
+	}
+	name, outbound, ok := h.config.OutboundSelector.Select(authID)
+	if !ok || outbound == nil || name == "" {
+		h.outbound = nil
+		h.outboundName = ""
+		return false
+	}
+	h.outbound = outbound
+	h.outboundName = name
+	return true
 }
 
 func (h *h3sHandler) ProxyStreamHijacker(ft http3.FrameType, stream *quic.Stream, err error) (bool, error) {
@@ -302,21 +324,17 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 		}
 	}
 	// Log the event
-	if h.config.EventLogger != nil {
-		h.config.EventLogger.TCPRequest(h.conn.RemoteAddr(), h.authID, reqAddr)
-	}
+	h.logTCPRequest(reqAddr)
 	// Dial target
 	streamStats.State.Store(StreamStateConnecting)
-	tConn, err := h.config.Outbound.TCP(reqAddr)
+	tConn, err := h.outbound.TCP(reqAddr)
 	if err != nil {
 		if !hooked {
 			_ = protocol.WriteTCPResponse(stream, false, err.Error())
 		}
 		_ = stream.Close()
 		// Log the error
-		if h.config.EventLogger != nil {
-			h.config.EventLogger.TCPError(h.conn.RemoteAddr(), h.authID, reqAddr, err)
-		}
+		h.logTCPError(reqAddr, err)
 		return
 	}
 	if !hooked {
@@ -335,9 +353,7 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 		// Use the fast path if no traffic logger is set
 		err = copyTwoWay(stream, tConn)
 	}
-	if h.config.EventLogger != nil {
-		h.config.EventLogger.TCPError(h.conn.RemoteAddr(), h.authID, reqAddr, err)
-	}
+	h.logTCPError(reqAddr, err)
 	// Cleanup
 	_ = tConn.Close()
 	_ = stream.Close()
@@ -345,6 +361,28 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 	if err == errDisconnect {
 		_ = h.conn.CloseWithError(closeErrCodeTrafficLimitReached, "")
 	}
+}
+
+func (h *h3sHandler) logTCPRequest(reqAddr string) {
+	if h.config.EventLogger == nil {
+		return
+	}
+	if logger, ok := h.config.EventLogger.(OutboundEventLogger); ok {
+		logger.TCPRequestOutbound(h.conn.RemoteAddr(), h.authID, reqAddr, h.outboundName)
+		return
+	}
+	h.config.EventLogger.TCPRequest(h.conn.RemoteAddr(), h.authID, reqAddr)
+}
+
+func (h *h3sHandler) logTCPError(reqAddr string, err error) {
+	if h.config.EventLogger == nil {
+		return
+	}
+	if logger, ok := h.config.EventLogger.(OutboundEventLogger); ok {
+		logger.TCPErrorOutbound(h.conn.RemoteAddr(), h.authID, reqAddr, h.outboundName, err)
+		return
+	}
+	h.config.EventLogger.TCPError(h.conn.RemoteAddr(), h.authID, reqAddr, err)
 }
 
 func (h *h3sHandler) masqHandler(w http.ResponseWriter, r *http.Request) {
@@ -423,19 +461,28 @@ func (io *udpIOImpl) CheckUDP(reqAddr string) error {
 }
 
 type udpEventLoggerImpl struct {
-	Conn        *quic.Conn
-	AuthID      string
-	EventLogger EventLogger
+	Conn         *quic.Conn
+	AuthID       string
+	OutboundName string
+	EventLogger  EventLogger
 }
 
 func (l *udpEventLoggerImpl) New(sessionID uint32, reqAddr string) {
 	if l.EventLogger != nil {
+		if logger, ok := l.EventLogger.(OutboundEventLogger); ok {
+			logger.UDPRequestOutbound(l.Conn.RemoteAddr(), l.AuthID, sessionID, reqAddr, l.OutboundName)
+			return
+		}
 		l.EventLogger.UDPRequest(l.Conn.RemoteAddr(), l.AuthID, sessionID, reqAddr)
 	}
 }
 
 func (l *udpEventLoggerImpl) Close(sessionID uint32, err error) {
 	if l.EventLogger != nil {
+		if logger, ok := l.EventLogger.(OutboundEventLogger); ok {
+			logger.UDPErrorOutbound(l.Conn.RemoteAddr(), l.AuthID, sessionID, l.OutboundName, err)
+			return
+		}
 		l.EventLogger.UDPError(l.Conn.RemoteAddr(), l.AuthID, sessionID, err)
 	}
 }

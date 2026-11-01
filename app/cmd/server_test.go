@@ -200,6 +200,10 @@ func TestServerConfig(t *testing.T) {
 				},
 			},
 		},
+		UserOutbounds: map[string]string{
+			"alice": "goodstuff",
+			"bob":   "badstuff",
+		},
 		TrafficStats: serverConfigTrafficStats{
 			Listen: ":9999",
 			Secret: "its_me_mario",
@@ -269,6 +273,66 @@ func TestServerFillCongestionConfig(t *testing.T) {
 		assert.EqualError(t, err, `invalid config: congestion.bbrProfile: unsupported BBR profile "turbo"`)
 	})
 }
+
+func TestServerFillUserOutboundSelector(t *testing.T) {
+	c := &serverConfig{
+		Outbounds: []serverConfigOutboundEntry{
+			{Name: "DIRECT", Type: "direct", Direct: serverConfigOutboundDirect{Mode: "4"}},
+			{Name: "TM_NET_1", Type: "socks5", SOCKS5: serverConfigOutboundSOCKS5{Addr: "127.0.0.1:10808"}},
+		},
+		UserOutbounds: map[string]string{
+			"test_direct": "DIRECT",
+			"test_tm1":    "TM_NET_1",
+		},
+	}
+	hyConfig := &server.Config{}
+	assert.NoError(t, c.fillOutboundConfig(hyConfig))
+	assert.NotNil(t, hyConfig.OutboundSelector)
+
+	name, outbound, ok := hyConfig.OutboundSelector.Select("test_direct")
+	assert.True(t, ok)
+	assert.Equal(t, "DIRECT", name)
+	assert.NotNil(t, outbound)
+	name, outbound, ok = hyConfig.OutboundSelector.Select("test_tm1")
+	assert.True(t, ok)
+	assert.Equal(t, "TM_NET_1", name)
+	assert.NotNil(t, outbound)
+	name, outbound, ok = hyConfig.OutboundSelector.Select("test_unbound")
+	assert.False(t, ok)
+	assert.Empty(t, name)
+	assert.Nil(t, outbound)
+}
+
+func TestServerRejectsInvalidUserOutboundMappings(t *testing.T) {
+	base := func() serverConfig {
+		return serverConfig{
+			Outbounds:     []serverConfigOutboundEntry{{Name: "DIRECT", Type: "direct"}},
+			UserOutbounds: map[string]string{"test_tm1": "MISSING"},
+		}
+	}
+
+	t.Run("unknown outbound", func(t *testing.T) {
+		c := base()
+		err := c.fillOutboundConfig(&server.Config{})
+		assert.EqualError(t, err, `invalid config: userOutbounds: unknown outbound "MISSING" for auth ID "test_tm1"`)
+	})
+	t.Run("ACL cannot bypass identity binding", func(t *testing.T) {
+		c := base()
+		c.UserOutbounds["test_tm1"] = "DIRECT"
+		c.ACL.Inline = []string{"direct(all)"}
+		err := c.fillOutboundConfig(&server.Config{})
+		assert.EqualError(t, err, "invalid config: userOutbounds: cannot combine user outbound routing with ACL")
+	})
+	t.Run("custom resolver is rejected", func(t *testing.T) {
+		c := base()
+		c.UserOutbounds["test_tm1"] = "DIRECT"
+		c.Resolver.Type = "udp"
+		err := c.fillOutboundConfig(&server.Config{})
+		assert.EqualError(t, err, "invalid config: userOutbounds: custom resolver is not supported with user outbound routing")
+	})
+}
+
+var _ server.OutboundEventLogger = (*serverLogger)(nil)
 
 func TestResolveServerListenAddr(t *testing.T) {
 	t.Run("single port", func(t *testing.T) {
