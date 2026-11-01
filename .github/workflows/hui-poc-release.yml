@@ -64,6 +64,8 @@ jobs:
           cache: true
 
       - name: Build release files
+        env:
+          HUI_POC_VERSION: ${{ github.ref_name }}
         run: ./poc/build-linux-amd64.sh
 
       - name: Upload build artifact
@@ -71,7 +73,7 @@ jobs:
         with:
           name: hysteria-linux-amd64-${{ github.ref_name }}
           path: |
-            dist/hysteria-linux-amd64-v2.13.0-hui.1
+            dist/hysteria-linux-amd64-${{ github.ref_name }}
             dist/SHA256SUMS-hui-poc
           if-no-files-found: error
 
@@ -108,6 +110,6 @@ jobs:
           --verify-tag
           --prerelease
           --title "Hysteria2 $GITHUB_REF_NAME per-user outbound PoC"
-          --notes-file poc/RELEASE_NOTES_v2.13.0-hui.1.md
-          dist/hysteria-linux-amd64-v2.13.0-hui.1
+          --notes-file poc/RELEASE_NOTES_v2.13.0-hui.2.md
+          dist/hysteria-linux-amd64-${{ github.ref_name }}
           dist/SHA256SUMS-hui-poc

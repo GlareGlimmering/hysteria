@@ -1,4 +1,4 @@
-# Hysteria2 v2.13.0-hui.1 PoC
+# Hysteria2 v2.13.0-hui.2 PoC
 
 This release is a functional proof of concept for per-authenticated-user
 outbound selection. It is based on official Hysteria2 `app/v2.13.0` at commit

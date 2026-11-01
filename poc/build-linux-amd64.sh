@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
-version="v2.13.0-hui.1"
+version="${HUI_POC_VERSION:-v2.13.0-hui.2}"
 commit="$(git rev-parse HEAD)"
 build_date="${SOURCE_DATE_EPOCH:-0}"
 mkdir -p dist
