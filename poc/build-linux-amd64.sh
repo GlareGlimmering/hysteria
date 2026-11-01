@@ -23,4 +23,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -buildvcs=false -trimpath -ldflags "${ldflags[*]}" \
   -o "dist/hysteria-linux-amd64-${version}" ./app
 
-sha256sum "dist/hysteria-linux-amd64-${version}" > "dist/SHA256SUMS-hui-poc"
+(
+  cd dist
+  sha256sum "hysteria-linux-amd64-${version}" > "SHA256SUMS-hui-poc"
+)
