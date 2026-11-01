@@ -1,0 +1,113 @@
+name: H-UI per-user outbound PoC release
+
+on:
+  push:
+    tags:
+      - "v*-hui.*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python test dependencies
+        run: uv sync
+        env:
+          UV_COMPILE_BYTECODE: "1"
+
+      - name: Expose Python test environment
+        run: |
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+
+      - name: Test core
+        working-directory: core
+        run: go test -count=1 -timeout=5m ./...
+
+      - name: Test extras
+        working-directory: extras
+        run: go test -count=1 ./...
+
+      - name: Test app
+        working-directory: app
+        run: go test -count=1 ./...
+
+  build:
+    name: Build Linux AMD64
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build release files
+        run: ./poc/build-linux-amd64.sh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: hysteria-linux-amd64-${{ github.ref_name }}
+          path: |
+            dist/hysteria-linux-amd64-v2.13.0-hui.1
+            dist/SHA256SUMS-hui-poc
+          if-no-files-found: error
+
+  release:
+    name: Publish prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: hysteria-linux-amd64-${{ github.ref_name }}
+          path: dist
+
+      - name: Refuse to overwrite an existing release
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists" >&2
+            exit 1
+          fi
+
+      - name: Create GitHub prerelease
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          --verify-tag
+          --prerelease
+          --title "Hysteria2 $GITHUB_REF_NAME per-user outbound PoC"
+          --notes-file poc/RELEASE_NOTES_v2.13.0-hui.1.md
+          dist/hysteria-linux-amd64-v2.13.0-hui.1
+          dist/SHA256SUMS-hui-poc
