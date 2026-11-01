@@ -178,3 +178,55 @@ func TestUserOutboundSelectorConcurrentReads(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestFailedUserOutboundDoesNotAffectOtherUserOrFallback(t *testing.T) {
+	direct := &recordingOutbound{}
+	broken := &recordingOutbound{fail: true}
+	fallback := &recordingOutbound{}
+	selector := mapOutboundSelector{
+		"test_direct":  {name: "DIRECT", outbound: direct},
+		"test_failure": {name: "BROKEN_OUTBOUND", outbound: broken},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		h := &h3sHandler{config: &Config{Outbound: fallback, OutboundSelector: selector}}
+		if !h.selectOutbound("test_direct") {
+			t.Error("DIRECT selection failed")
+			return
+		}
+		if _, err := h.outbound.TCP("example.com:443"); err != nil {
+			t.Errorf("DIRECT TCP unexpectedly failed: %v", err)
+		}
+		if _, err := h.outbound.UDP("example.com:53"); err != nil {
+			t.Errorf("DIRECT UDP unexpectedly failed: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		h := &h3sHandler{config: &Config{Outbound: fallback, OutboundSelector: selector}}
+		if !h.selectOutbound("test_failure") {
+			t.Error("BROKEN_OUTBOUND selection failed")
+			return
+		}
+		if _, err := h.outbound.TCP("example.com:443"); err == nil {
+			t.Error("broken TCP outbound unexpectedly succeeded")
+		}
+		if _, err := h.outbound.UDP("example.com:53"); err == nil {
+			t.Error("broken UDP outbound unexpectedly succeeded")
+		}
+	}()
+	wg.Wait()
+
+	if tcp, udp, check := direct.calls(); tcp != 1 || udp != 1 || check != 0 {
+		t.Fatalf("DIRECT calls = %d/%d/%d, want 1/1/0", tcp, udp, check)
+	}
+	if tcp, udp, check := broken.calls(); tcp != 1 || udp != 1 || check != 0 {
+		t.Fatalf("BROKEN_OUTBOUND calls = %d/%d/%d, want 1/1/0", tcp, udp, check)
+	}
+	if tcp, udp, check := fallback.calls(); tcp != 0 || udp != 0 || check != 0 {
+		t.Fatalf("fallback was used during isolated failure: %d/%d/%d", tcp, udp, check)
+	}
+}
