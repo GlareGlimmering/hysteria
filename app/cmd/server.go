@@ -168,6 +168,21 @@ type serverConfigACMEDNS struct {
 	Config map[string]string `mapstructure:"config"`
 }
 
+var acmeDNSIPv4Resolvers = []string{
+	"8.8.8.8:53",
+	"8.8.4.4:53",
+}
+
+func newACMEDNSManager(provider certmagic.DNSProvider) certmagic.DNSManager {
+	return certmagic.DNSManager{
+		DNSProvider: provider,
+		// ACME DNS-01 propagation must also work on IPv4-only servers. Keep
+		// this resolver policy local to certificate issuance; proxy DNS and
+		// all other HY2 IPv6 behavior remain unchanged.
+		Resolvers: append([]string(nil), acmeDNSIPv4Resolvers...),
+	}
+}
+
 type serverConfigQUIC struct {
 	InitStreamReceiveWindow     uint64        `mapstructure:"initStreamReceiveWindow"`
 	MaxStreamReceiveWindow      uint64        `mapstructure:"maxStreamReceiveWindow"`
@@ -1130,9 +1145,7 @@ func (c *serverConfig) fillTLSConfig(hyConfig *server.Config) error {
 				return configError{Field: "acme.dns.name", Err: errors.New("unsupported DNS provider")}
 			}
 			cmIssuer.DNS01Solver = &certmagic.DNS01Solver{
-				DNSManager: certmagic.DNSManager{
-					DNSProvider: dnsProvider,
-				},
+				DNSManager: newACMEDNSManager(dnsProvider),
 			}
 		case "":
 			// Legacy compatibility mode

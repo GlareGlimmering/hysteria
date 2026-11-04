@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -13,6 +14,19 @@ import (
 
 	"github.com/spf13/viper"
 )
+
+func TestACMEDNSManagerUsesIPv4ResolversOnly(t *testing.T) {
+	manager := newACMEDNSManager(nil)
+	assert.Equal(t, []string{"8.8.8.8:53", "8.8.4.4:53"}, manager.Resolvers)
+	for _, resolver := range manager.Resolvers {
+		host, port, err := net.SplitHostPort(resolver)
+		assert.NoError(t, err)
+		assert.Equal(t, "53", port)
+		ip := net.ParseIP(host)
+		assert.NotNil(t, ip)
+		assert.NotNil(t, ip.To4(), "ACME resolver must be IPv4-only: %s", resolver)
+	}
+}
 
 // TestServerConfig tests the parsing of the server config
 func TestServerConfig(t *testing.T) {
