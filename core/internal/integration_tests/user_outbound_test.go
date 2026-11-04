@@ -19,7 +19,7 @@ type pocAuthenticator struct{}
 
 func (pocAuthenticator) Authenticate(_ net.Addr, auth string, _ uint64) (bool, string) {
 	switch auth {
-	case "test_direct", "test_tm1", "test_unbound":
+	case "test_direct", "test_tm1", "test_unbound", "TESTsss":
 		return true, auth
 	default:
 		return false, ""
@@ -155,6 +155,7 @@ func TestUserOutboundRoutingTCPUDPAndUnbound(t *testing.T) {
 		Outbound:      fallback,
 		OutboundSelector: pocSelector{
 			"test_direct": {name: "DIRECT", outbound: direct},
+			"TESTsss":     {name: "DIRECT", outbound: direct},
 			"test_tm1":    {name: "TM_NET_1", outbound: tm1},
 		},
 		EventLogger: events,
@@ -179,6 +180,7 @@ func TestUserOutboundRoutingTCPUDPAndUnbound(t *testing.T) {
 		outbound string
 	}{
 		{id: "test_direct", outbound: "DIRECT"},
+		{id: "TESTsss", outbound: "DIRECT"},
 		{id: "test_tm1", outbound: "TM_NET_1"},
 	} {
 		c, _, err := client.NewClient(&client.Config{
@@ -221,7 +223,7 @@ func TestUserOutboundRoutingTCPUDPAndUnbound(t *testing.T) {
 	var authErr coreErrors.AuthError
 	require.ErrorAs(t, err, &authErr)
 
-	require.Equal(t, []int{1, 1}, func() []int { tcp, udp := direct.counts(); return []int{tcp, udp} }())
+	require.Equal(t, []int{2, 2}, func() []int { tcp, udp := direct.counts(); return []int{tcp, udp} }())
 	require.Equal(t, []int{1, 1}, func() []int { tcp, udp := tm1.counts(); return []int{tcp, udp} }())
 	require.Equal(t, []int{0, 0}, func() []int { tcp, udp := fallback.counts(); return []int{tcp, udp} }())
 }

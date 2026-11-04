@@ -110,6 +110,6 @@ jobs:
           --verify-tag
           --prerelease
           --title "Hysteria2 $GITHUB_REF_NAME per-user outbound PoC"
-          --notes-file poc/RELEASE_NOTES_v2.13.0-hui.3.md
+          --notes-file poc/RELEASE_NOTES_v2.13.0-hui.4.md
           dist/hysteria-linux-amd64-${{ github.ref_name }}
           dist/SHA256SUMS-hui-poc

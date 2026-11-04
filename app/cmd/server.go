@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
+	"go.yaml.in/yaml/v3"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/apernet/hysteria/app/v2/internal/firewall"
@@ -1764,7 +1766,7 @@ func runServer(v *viper.Viper) {
 		logger.Fatal("failed to read server config", zap.Error(err))
 	}
 	var config serverConfig
-	if err := v.Unmarshal(&config); err != nil {
+	if err := decodeServerConfig(v, &config); err != nil {
 		logger.Fatal("failed to parse server config", zap.Error(err))
 	}
 	hyConfig, err := config.Config()
@@ -1825,6 +1827,37 @@ func runServer(v *viper.Viper) {
 			logger.Fatal("failed to serve", zap.Error(err))
 		}
 	}
+}
+
+// Viper folds all map keys to lowercase. Auth IDs are case-sensitive opaque
+// identities, so read just this map from the original YAML/JSON instead.
+func decodeServerConfig(v *viper.Viper, config *serverConfig) error {
+	if err := v.Unmarshal(config); err != nil {
+		return err
+	}
+	if !v.IsSet("userOutbounds") {
+		return nil
+	}
+	switch strings.ToLower(filepath.Ext(v.ConfigFileUsed())) {
+	case ".yaml", ".yml", ".json":
+	default:
+		return errors.New("userOutbounds requires a YAML or JSON config file to preserve auth ID case")
+	}
+	raw, err := os.ReadFile(v.ConfigFileUsed())
+	if err != nil {
+		return errors.New("cannot read userOutbounds config")
+	}
+	var identities struct {
+		UserOutbounds map[string]string `yaml:"userOutbounds"`
+	}
+	if err := yaml.Unmarshal(raw, &identities); err != nil {
+		return errors.New("invalid userOutbounds YAML/JSON")
+	}
+	if identities.UserOutbounds == nil && len(config.UserOutbounds) > 0 {
+		return errors.New("userOutbounds must use the exact field name userOutbounds")
+	}
+	config.UserOutbounds = identities.UserOutbounds
+	return nil
 }
 
 func runTrafficStatsServer(listen string, handler http.Handler) {
