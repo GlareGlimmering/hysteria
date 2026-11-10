@@ -124,7 +124,8 @@ func (s *trafficStatsServerImpl) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/capabilities" {
-		_, _ = w.Write([]byte(`{"accountConsistency":2,"accountBandwidth":1}`))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CurrentCapabilities())
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/traffic/batch" {
