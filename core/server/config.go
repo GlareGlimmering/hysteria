@@ -238,6 +238,19 @@ type Authenticator interface {
 	Authenticate(addr net.Addr, auth string, tx uint64) (ok bool, id string)
 }
 
+// LimitedAuthenticator optionally returns the maximum simultaneous QUIC
+// connections for this identity. A negative limit means unspecified.
+type LimitedAuthenticator interface {
+	AuthenticateWithLimit(addr net.Addr, auth string, tx uint64) (ok bool, id string, limit int, accountID int64)
+}
+
+// ConnectionRegistry fences in-flight authentication against concurrent kicks.
+// The returned release function must be called when the QUIC connection ends.
+type ConnectionRegistry interface {
+	AdmissionRevision() uint64
+	RegisterConnection(id string, limit int, revision uint64, closeConnection func()) (release func(), ok bool)
+}
+
 // EventLogger is an interface that provides logging logic.
 type EventLogger interface {
 	Connect(addr net.Addr, id string, tx uint64)

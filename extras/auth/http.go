@@ -22,8 +22,9 @@ var _ server.Authenticator = &HTTPAuthenticator{}
 var errInvalidStatusCode = errors.New("invalid status code")
 
 type HTTPAuthenticator struct {
-	Client *http.Client
-	URL    string
+	Client             *http.Client
+	URL                string
+	RequireDeviceLimit bool
 }
 
 func NewHTTPAuthenticator(url string, insecure bool) *HTTPAuthenticator {
@@ -47,8 +48,10 @@ type httpAuthRequest struct {
 }
 
 type httpAuthResponse struct {
-	OK bool   `json:"ok"`
-	ID string `json:"id"`
+	OK          bool   `json:"ok"`
+	ID          string `json:"id"`
+	DeviceLimit *int   `json:"deviceLimit"`
+	AccountID   int64  `json:"accountId"`
 }
 
 func (a *HTTPAuthenticator) post(req *httpAuthRequest) (*httpAuthResponse, error) {
@@ -77,6 +80,11 @@ func (a *HTTPAuthenticator) post(req *httpAuthRequest) (*httpAuthResponse, error
 }
 
 func (a *HTTPAuthenticator) Authenticate(addr net.Addr, auth string, tx uint64) (ok bool, id string) {
+	ok, id, _, _ = a.AuthenticateWithLimit(addr, auth, tx)
+	return
+}
+
+func (a *HTTPAuthenticator) AuthenticateWithLimit(addr net.Addr, auth string, tx uint64) (ok bool, id string, limit int, accountID int64) {
 	req := &httpAuthRequest{
 		Addr: addr.String(),
 		Auth: auth,
@@ -84,7 +92,17 @@ func (a *HTTPAuthenticator) Authenticate(addr net.Addr, auth string, tx uint64) 
 	}
 	resp, err := a.post(req)
 	if err != nil {
-		return false, ""
+		return false, "", -1, 0
 	}
-	return resp.OK, resp.ID
+	limit = -1
+	if a.RequireDeviceLimit && (resp.DeviceLimit == nil || resp.AccountID <= 0) {
+		return false, "", -1, 0
+	}
+	if resp.DeviceLimit != nil {
+		if *resp.DeviceLimit < 1 {
+			return false, "", -1, 0
+		}
+		limit = *resp.DeviceLimit
+	}
+	return resp.OK, resp.ID, limit, resp.AccountID
 }

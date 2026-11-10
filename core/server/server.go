@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -128,16 +129,21 @@ func (s *serverImpl) handleClient(conn *quic.Conn) {
 		StreamDispatcher: handler.ProxyStreamHijacker,
 	}
 	err := h3s.ServeQUICConn(conn)
+	_ = conn.CloseWithError(closeErrCodeOK, "")
+	handler.authMutex.Lock()
+	if handler.releaseAdmission != nil {
+		handler.releaseAdmission()
+	}
 	// If the client is authenticated, we need to log the disconnect event
 	if handler.authenticated {
-		if tl := s.config.TrafficLogger; tl != nil {
+		if tl := s.config.TrafficLogger; tl != nil && handler.releaseAdmission == nil {
 			tl.LogOnlineState(handler.authID, false)
 		}
 		if el := s.config.EventLogger; el != nil {
 			el.Disconnect(conn.RemoteAddr(), handler.authID, err)
 		}
 	}
-	_ = conn.CloseWithError(closeErrCodeOK, "")
+	handler.authMutex.Unlock()
 }
 
 type h3sHandler struct {
@@ -147,11 +153,12 @@ type h3sHandler struct {
 	authenticated bool
 	authMutex     sync.Mutex
 	authID        string
+	trafficID     string
 	outbound      Outbound
 	outboundName  string
 	connID        uint32 // a random id for dump streams
 
-	udpSM *udpSessionManager // Only set after authentication
+	releaseAdmission func()
 }
 
 func newH3sHandler(config *Config, conn *quic.Conn) *h3sHandler {
@@ -180,14 +187,42 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		authReq := protocol.AuthRequestFromHeader(r.Header)
 		actualTx := authReq.Rx
-		ok, id := h.config.Authenticator.Authenticate(h.conn.RemoteAddr(), authReq.Auth, actualTx)
+		registry, managed := h.config.TrafficLogger.(ConnectionRegistry)
+		var revision uint64
+		if managed {
+			revision = registry.AdmissionRevision()
+		}
+		var ok bool
+		var id string
+		var accountID int64
+		limit := -1
+		if authenticator, supported := h.config.Authenticator.(LimitedAuthenticator); supported {
+			ok, id, limit, accountID = authenticator.AuthenticateWithLimit(h.conn.RemoteAddr(), authReq.Auth, actualTx)
+		} else {
+			ok, id = h.config.Authenticator.Authenticate(h.conn.RemoteAddr(), authReq.Auth, actualTx)
+		}
 		if ok && !h.selectOutbound(id) {
+			ok = false
+		}
+		if ok && managed {
+			if h.conn.Context().Err() != nil {
+				ok = false
+			} else {
+				h.releaseAdmission, ok = registry.RegisterConnection(id, limit, revision, func() {
+					_ = h.conn.CloseWithError(closeErrCodeTrafficLimitReached, "")
+				})
+			}
+		} else if limit >= 0 {
 			ok = false
 		}
 		if ok {
 			// Set authenticated flag
 			h.authenticated = true
 			h.authID = id
+			h.trafficID = id
+			if accountID > 0 {
+				h.trafficID = "account:" + strconv.FormatInt(accountID, 10)
+			}
 			if h.config.IgnoreClientBandwidth {
 				// Ignore client bandwidth and use the configured congestion controller.
 				congestion.UseConfigured(h.conn, h.config.CongestionConfig.Type, h.config.CongestionConfig.BBRProfile)
@@ -214,7 +249,7 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			w.WriteHeader(protocol.StatusAuthOK)
 			// Call event logger
-			if tl := h.config.TrafficLogger; tl != nil {
+			if tl := h.config.TrafficLogger; tl != nil && !managed {
 				tl.LogOnlineState(id, true)
 			}
 			if el := h.config.EventLogger; el != nil {
@@ -226,12 +261,11 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !h.config.DisableUDP {
 				go func() {
 					sm := newUDPSessionManager(
-						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.outbound},
+						&udpIOImpl{h.conn, h.trafficID, h.config.TrafficLogger, h.config.RequestHook, h.outbound},
 						&udpEventLoggerImpl{h.conn, id, h.outboundName, h.config.EventLogger},
 						h.config.UDPIdleTimeout,
 					)
-					h.udpSM = sm
-					go sm.Run()
+					_ = sm.Run()
 				}()
 			}
 		} else {
@@ -260,7 +294,10 @@ func (h *h3sHandler) selectOutbound(authID string) bool {
 }
 
 func (h *h3sHandler) ProxyStreamHijacker(ft http3.FrameType, stream *quic.Stream, err error) (bool, error) {
-	if err != nil || !h.authenticated {
+	h.authMutex.Lock()
+	authenticated := h.authenticated
+	h.authMutex.Unlock()
+	if err != nil || !authenticated {
 		return false, nil
 	}
 
@@ -348,7 +385,7 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 	}
 	// Start proxying
 	if trafficLogger != nil {
-		err = copyTwoWayEx(h.authID, stream, tConn, trafficLogger, streamStats)
+		err = copyTwoWayEx(h.trafficID, stream, tConn, trafficLogger, streamStats)
 	} else {
 		// Use the fast path if no traffic logger is set
 		err = copyTwoWay(stream, tConn)

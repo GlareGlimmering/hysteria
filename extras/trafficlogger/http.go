@@ -27,21 +27,28 @@ type TrafficStatsServer interface {
 
 func NewTrafficStatsServer(secret string) TrafficStatsServer {
 	return &trafficStatsServerImpl{
-		StatsMap:  make(map[string]*trafficStatsEntry),
-		KickMap:   make(map[string]struct{}),
-		OnlineMap: make(map[string]int),
-		StreamMap: make(map[server.HyStream]*server.StreamStats),
-		Secret:    secret,
+		StatsMap:    make(map[string]*trafficStatsEntry),
+		connections: make(map[string]map[*trackedConnection]struct{}),
+		epoch:       newEpoch(),
+		OnlineMap:   make(map[string]int),
+		StreamMap:   make(map[server.HyStream]*server.StreamStats),
+		Secret:      secret,
 	}
 }
 
 type trafficStatsServerImpl struct {
-	Mutex     sync.RWMutex
-	StatsMap  map[string]*trafficStatsEntry
-	OnlineMap map[string]int
-	StreamMap map[server.HyStream]*server.StreamStats
-	KickMap   map[string]struct{}
-	Secret    string
+	Mutex       sync.RWMutex
+	StatsMap    map[string]*trafficStatsEntry
+	OnlineMap   map[string]int
+	StreamMap   map[server.HyStream]*server.StreamStats
+	Secret      string
+	connections map[string]map[*trackedConnection]struct{}
+	revision    uint64
+	epoch       string
+	sequence    uint64
+	pending     *trafficBatch
+	lastAck     time.Time
+	paused      bool
 }
 
 type trafficStatsEntry struct {
@@ -53,14 +60,15 @@ func (s *trafficStatsServerImpl) LogTraffic(id string, tx, rx uint64) (ok bool) 
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
 
-	_, ok = s.KickMap[id]
-	if ok {
-		delete(s.KickMap, id)
+	if s.paused || (!s.lastAck.IsZero() && time.Since(s.lastAck) >= settlementLease) {
 		return false
 	}
 
 	entry, ok := s.StatsMap[id]
 	if !ok {
+		if len(s.StatsMap) >= maxBatchIdentities {
+			return false
+		}
 		entry = &trafficStatsEntry{}
 		s.StatsMap[id] = entry
 	}
@@ -112,6 +120,32 @@ func (s *trafficStatsServerImpl) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		s.getTraffic(w, r)
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/capabilities" {
+		_, _ = w.Write([]byte(`{"accountConsistency":2}`))
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/traffic/batch" {
+		s.getBatch(w)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/traffic/ack" {
+		s.ackBatch(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && (r.URL.Path == "/traffic/pause" || r.URL.Path == "/traffic/resume") {
+		s.Mutex.Lock()
+		s.paused = r.URL.Path == "/traffic/pause"
+		s.Mutex.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/admission/fence" {
+		s.Mutex.Lock()
+		s.revision++
+		s.Mutex.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method == http.MethodPost && r.URL.Path == "/kick" {
 		s.kick(w, r)
 		return
@@ -128,19 +162,13 @@ func (s *trafficStatsServerImpl) ServeHTTP(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *trafficStatsServerImpl) getTraffic(w http.ResponseWriter, r *http.Request) {
-	bClear, _ := strconv.ParseBool(r.URL.Query().Get("clear"))
-	var jb []byte
-	var err error
-	if bClear {
-		s.Mutex.Lock()
-		jb, err = json.Marshal(s.StatsMap)
-		s.StatsMap = make(map[string]*trafficStatsEntry)
-		s.Mutex.Unlock()
-	} else {
-		s.Mutex.RLock()
-		jb, err = json.Marshal(s.StatsMap)
-		s.Mutex.RUnlock()
+	if clear, _ := strconv.ParseBool(r.URL.Query().Get("clear")); clear {
+		http.Error(w, "use acknowledged traffic batches", http.StatusConflict)
+		return
 	}
+	s.Mutex.RLock()
+	jb, err := json.Marshal(s.StatsMap)
+	s.Mutex.RUnlock()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -284,16 +312,12 @@ func (s *trafficStatsServerImpl) getDumpStreams(w http.ResponseWriter, r *http.R
 
 func (s *trafficStatsServerImpl) kick(w http.ResponseWriter, r *http.Request) {
 	var ids []string
-	err := json.NewDecoder(r.Body).Decode(&ids)
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&ids)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.Mutex.Lock()
-	for _, id := range ids {
-		s.KickMap[id] = struct{}{}
-	}
-	s.Mutex.Unlock()
+	s.closeConnections(ids)
 
 	w.WriteHeader(http.StatusOK)
 }

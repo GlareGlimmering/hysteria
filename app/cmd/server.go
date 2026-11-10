@@ -1543,7 +1543,9 @@ func (c *serverConfig) fillAuthenticator(hyConfig *server.Config) error {
 		if c.Auth.HTTP.URL == "" {
 			return configError{Field: "auth.http.url", Err: errors.New("empty auth http url")}
 		}
-		hyConfig.Authenticator = auth.NewHTTPAuthenticator(c.Auth.HTTP.URL, c.Auth.HTTP.Insecure)
+		httpAuth := auth.NewHTTPAuthenticator(c.Auth.HTTP.URL, c.Auth.HTTP.Insecure)
+		httpAuth.RequireDeviceLimit = c.TrafficStats.Listen != ""
+		hyConfig.Authenticator = httpAuth
 		return nil
 	case "command", "cmd":
 		if c.Auth.Command == "" {
