@@ -148,6 +148,9 @@ func (e *udpSessionEntry) write(dfMsg *protocol.UDPMessage) (int, error) {
 		return 0, err
 	}
 
+	if gate, ok := e.IO.(interface{ allowPayload(bool, int) bool }); ok && !gate.allowPayload(true, len(dfMsg.Data)) {
+		return 0, nil
+	}
 	return e.conn.WriteTo(dfMsg.Data, addr)
 }
 
@@ -235,6 +238,9 @@ func (e *udpSessionEntry) receiveLoop() {
 			FragCount: 1,
 			Addr:      rAddr,
 			Data:      udpBuf[:udpN],
+		}
+		if gate, ok := e.IO.(interface{ allowPayload(bool, int) bool }); ok && !gate.allowPayload(false, udpN) {
+			continue
 		}
 		err = sendMessageAutoFrag(e.IO, msgBuf, msg)
 		if err != nil {

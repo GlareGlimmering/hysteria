@@ -48,10 +48,11 @@ type httpAuthRequest struct {
 }
 
 type httpAuthResponse struct {
-	OK          bool   `json:"ok"`
-	ID          string `json:"id"`
-	DeviceLimit *int   `json:"deviceLimit"`
-	AccountID   int64  `json:"accountId"`
+	OK          bool                    `json:"ok"`
+	ID          string                  `json:"id"`
+	DeviceLimit *int                    `json:"deviceLimit"`
+	AccountID   int64                   `json:"accountId"`
+	Bandwidth   *server.BandwidthPolicy `json:"bandwidth,omitempty"`
 }
 
 func (a *HTTPAuthenticator) post(req *httpAuthRequest) (*httpAuthResponse, error) {
@@ -85,6 +86,11 @@ func (a *HTTPAuthenticator) Authenticate(addr net.Addr, auth string, tx uint64) 
 }
 
 func (a *HTTPAuthenticator) AuthenticateWithLimit(addr net.Addr, auth string, tx uint64) (ok bool, id string, limit int, accountID int64) {
+	ok, id, limit, accountID, _ = a.AuthenticateWithBandwidth(addr, auth, tx)
+	return
+}
+
+func (a *HTTPAuthenticator) AuthenticateWithBandwidth(addr net.Addr, auth string, tx uint64) (ok bool, id string, limit int, accountID int64, policy *server.BandwidthPolicy) {
 	req := &httpAuthRequest{
 		Addr: addr.String(),
 		Auth: auth,
@@ -92,17 +98,20 @@ func (a *HTTPAuthenticator) AuthenticateWithLimit(addr net.Addr, auth string, tx
 	}
 	resp, err := a.post(req)
 	if err != nil {
-		return false, "", -1, 0
+		return false, "", -1, 0, nil
 	}
 	limit = -1
 	if a.RequireDeviceLimit && (resp.DeviceLimit == nil || resp.AccountID <= 0) {
-		return false, "", -1, 0
+		return false, "", -1, 0, nil
 	}
 	if resp.DeviceLimit != nil {
 		if *resp.DeviceLimit < 1 {
-			return false, "", -1, 0
+			return false, "", -1, 0, nil
 		}
 		limit = *resp.DeviceLimit
 	}
-	return resp.OK, resp.ID, limit, resp.AccountID
+	if resp.Bandwidth != nil && (!resp.Bandwidth.Valid() || resp.AccountID <= 0) {
+		return false, "", -1, 0, nil
+	}
+	return resp.OK, resp.ID, limit, resp.AccountID, resp.Bandwidth
 }

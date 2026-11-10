@@ -19,6 +19,11 @@ import (
 
 func settlementServer(t *testing.T) (TrafficStatsServer, func(string) (client.Client, error)) {
 	t.Helper()
+	return settlementServerWithBandwidth(t, nil)
+}
+
+func settlementServerWithBandwidth(t *testing.T, policy *server.BandwidthPolicy, hooks ...server.RequestHook) (TrafficStatsServer, func(string) (client.Client, error)) {
+	t.Helper()
 	stats := NewTrafficStatsServer("fixture")
 	first := callStats(stats, "GET", "/traffic/batch", "")
 	// Let the legacy implementation reach the admissions assertion too.
@@ -40,7 +45,7 @@ func settlementServer(t *testing.T) (TrafficStatsServer, func(string) (client.Cl
 			limit = 1
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok": req.Auth != "invalid", "id": req.Auth, "accountId": 42, "deviceLimit": limit,
+			"ok": req.Auth != "invalid", "id": req.Auth, "accountId": 42, "deviceLimit": limit, "bandwidth": policy,
 		})
 	}))
 	t.Cleanup(callback.Close)
@@ -48,8 +53,13 @@ func settlementServer(t *testing.T) (TrafficStatsServer, func(string) (client.Cl
 	require.NoError(t, err)
 	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
+	var hook server.RequestHook
+	if len(hooks) > 0 {
+		hook = hooks[0]
+	}
 	srv, err := server.NewServer(&server.Config{
-		Conn: conn, TrafficLogger: stats, Authenticator: auth.NewHTTPAuthenticator(callback.URL, false),
+		RequestHook: hook,
+		Conn:        conn, TrafficLogger: stats, Authenticator: auth.NewHTTPAuthenticator(callback.URL, false),
 		TLSConfig: server.TLSConfig{Certificates: []tls.Certificate{cert}},
 	})
 	require.NoError(t, err)

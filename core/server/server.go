@@ -5,6 +5,7 @@ import (
 	crand "crypto/rand"
 	"crypto/tls"
 	"errors"
+	"io"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -131,6 +132,9 @@ func (s *serverImpl) handleClient(conn *quic.Conn) {
 	err := h3s.ServeQUICConn(conn)
 	_ = conn.CloseWithError(closeErrCodeOK, "")
 	handler.authMutex.Lock()
+	if handler.releaseBandwidth != nil {
+		handler.releaseBandwidth()
+	}
 	if handler.releaseAdmission != nil {
 		handler.releaseAdmission()
 	}
@@ -159,6 +163,8 @@ type h3sHandler struct {
 	connID        uint32 // a random id for dump streams
 
 	releaseAdmission func()
+	bandwidth        *PayloadBudget
+	releaseBandwidth func()
 }
 
 func newH3sHandler(config *Config, conn *quic.Conn) *h3sHandler {
@@ -196,7 +202,10 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var id string
 		var accountID int64
 		limit := -1
-		if authenticator, supported := h.config.Authenticator.(LimitedAuthenticator); supported {
+		var policy *BandwidthPolicy
+		if authenticator, supported := h.config.Authenticator.(BandwidthAuthenticator); supported {
+			ok, id, limit, accountID, policy = authenticator.AuthenticateWithBandwidth(h.conn.RemoteAddr(), authReq.Auth, actualTx)
+		} else if authenticator, supported := h.config.Authenticator.(LimitedAuthenticator); supported {
 			ok, id, limit, accountID = authenticator.AuthenticateWithLimit(h.conn.RemoteAddr(), authReq.Auth, actualTx)
 		} else {
 			ok, id = h.config.Authenticator.Authenticate(h.conn.RemoteAddr(), authReq.Auth, actualTx)
@@ -214,6 +223,17 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if limit >= 0 {
 			ok = false
+		}
+		if ok && policy != nil {
+			if budgets, supported := h.config.TrafficLogger.(BandwidthRegistry); supported {
+				h.bandwidth, h.releaseBandwidth, ok = budgets.AcquireBandwidth(accountID, *policy, revision)
+			} else {
+				ok = false
+			}
+			if !ok && h.releaseAdmission != nil {
+				h.releaseAdmission()
+				h.releaseAdmission = nil
+			}
 		}
 		if ok {
 			// Set authenticated flag
@@ -261,7 +281,7 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !h.config.DisableUDP {
 				go func() {
 					sm := newUDPSessionManager(
-						&udpIOImpl{h.conn, h.trafficID, h.config.TrafficLogger, h.config.RequestHook, h.outbound},
+						&udpIOImpl{h.conn, h.trafficID, h.config.TrafficLogger, h.config.RequestHook, h.outbound, h.bandwidth},
 						&udpEventLoggerImpl{h.conn, id, h.outboundName, h.config.EventLogger},
 						h.config.UDPIdleTimeout,
 					)
@@ -378,17 +398,36 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 		_ = protocol.WriteTCPResponse(stream, true, "Connected")
 	}
 	streamStats.State.Store(StreamStateEstablished)
+	var toClient, toTarget io.ReadWriter = stream, tConn
+	if h.bandwidth != nil {
+		ctx, cancel := context.WithCancel(stream.Context())
+		defer cancel()
+		toClient = payloadWriter{ReadWriter: stream, ctx: ctx, budget: h.bandwidth}
+		toTarget = payloadWriter{ReadWriter: tConn, ctx: ctx, budget: h.bandwidth, upload: true}
+	}
 	// Put back the data if the hook requested
 	if len(putback) > 0 {
-		n, _ := tConn.Write(putback)
+		if h.bandwidth != nil && trafficLogger != nil && !trafficLogger.LogTraffic(h.trafficID, uint64(len(putback)), 0) {
+			_ = tConn.Close()
+			_ = stream.Close()
+			_ = h.conn.CloseWithError(closeErrCodeTrafficLimitReached, "")
+			return
+		}
+		n, writeErr := toTarget.Write(putback)
 		streamStats.Tx.Add(uint64(n))
+		if writeErr != nil {
+			_ = tConn.Close()
+			_ = stream.Close()
+			h.logTCPError(reqAddr, writeErr)
+			return
+		}
 	}
 	// Start proxying
 	if trafficLogger != nil {
-		err = copyTwoWayEx(h.trafficID, stream, tConn, trafficLogger, streamStats)
+		err = copyTwoWayEx(h.trafficID, toClient, toTarget, trafficLogger, streamStats)
 	} else {
 		// Use the fast path if no traffic logger is set
-		err = copyTwoWay(stream, tConn)
+		err = copyTwoWay(toClient, toTarget)
 	}
 	h.logTCPError(reqAddr, err)
 	// Cleanup
@@ -438,6 +477,28 @@ type udpIOImpl struct {
 	TrafficLogger TrafficLogger
 	RequestHook   RequestHook
 	Outbound      Outbound
+	Bandwidth     *PayloadBudget
+}
+
+// allowPayload is called once per complete UDP payload before forwarding.
+func (io *udpIOImpl) allowPayload(upload bool, n int) bool {
+	if io.Bandwidth == nil {
+		return true
+	}
+	if !io.Bandwidth.AllowAt(time.Now(), upload, n) {
+		return false
+	}
+	var tx, rx uint64
+	if upload {
+		tx = uint64(n)
+	} else {
+		rx = uint64(n)
+	}
+	if io.TrafficLogger != nil && !io.TrafficLogger.LogTraffic(io.AuthID, tx, rx) {
+		_ = io.Conn.CloseWithError(closeErrCodeTrafficLimitReached, "")
+		return false
+	}
+	return true
 }
 
 func (io *udpIOImpl) ReceiveMessage() (*protocol.UDPMessage, error) {
@@ -452,7 +513,7 @@ func (io *udpIOImpl) ReceiveMessage() (*protocol.UDPMessage, error) {
 			// Invalid message, this is fine - just wait for the next
 			continue
 		}
-		if io.TrafficLogger != nil {
+		if io.TrafficLogger != nil && io.Bandwidth == nil {
 			ok := io.TrafficLogger.LogTraffic(io.AuthID, uint64(len(udpMsg.Data)), 0)
 			if !ok {
 				// TrafficLogger requested to disconnect the client
@@ -465,7 +526,7 @@ func (io *udpIOImpl) ReceiveMessage() (*protocol.UDPMessage, error) {
 }
 
 func (io *udpIOImpl) SendMessage(buf []byte, msg *protocol.UDPMessage) error {
-	if io.TrafficLogger != nil {
+	if io.TrafficLogger != nil && io.Bandwidth == nil {
 		ok := io.TrafficLogger.LogTraffic(io.AuthID, 0, uint64(len(msg.Data)))
 		if !ok {
 			// TrafficLogger requested to disconnect the client

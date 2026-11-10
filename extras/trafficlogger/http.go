@@ -29,6 +29,7 @@ func NewTrafficStatsServer(secret string) TrafficStatsServer {
 	return &trafficStatsServerImpl{
 		StatsMap:    make(map[string]*trafficStatsEntry),
 		connections: make(map[string]map[*trackedConnection]struct{}),
+		budgets:     make(map[int64]*accountBudget),
 		epoch:       newEpoch(),
 		OnlineMap:   make(map[string]int),
 		StreamMap:   make(map[server.HyStream]*server.StreamStats),
@@ -37,18 +38,20 @@ func NewTrafficStatsServer(secret string) TrafficStatsServer {
 }
 
 type trafficStatsServerImpl struct {
-	Mutex       sync.RWMutex
-	StatsMap    map[string]*trafficStatsEntry
-	OnlineMap   map[string]int
-	StreamMap   map[server.HyStream]*server.StreamStats
-	Secret      string
-	connections map[string]map[*trackedConnection]struct{}
-	revision    uint64
-	epoch       string
-	sequence    uint64
-	pending     *trafficBatch
-	lastAck     time.Time
-	paused      bool
+	Mutex           sync.RWMutex
+	StatsMap        map[string]*trafficStatsEntry
+	OnlineMap       map[string]int
+	StreamMap       map[server.HyStream]*server.StreamStats
+	Secret          string
+	connections     map[string]map[*trackedConnection]struct{}
+	revision        uint64
+	budgets         map[int64]*accountBudget
+	nextBudgetSweep time.Time
+	epoch           string
+	sequence        uint64
+	pending         *trafficBatch
+	lastAck         time.Time
+	paused          bool
 }
 
 type trafficStatsEntry struct {
@@ -121,7 +124,7 @@ func (s *trafficStatsServerImpl) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/capabilities" {
-		_, _ = w.Write([]byte(`{"accountConsistency":2}`))
+		_, _ = w.Write([]byte(`{"accountConsistency":2,"accountBandwidth":1}`))
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/traffic/batch" {
@@ -144,6 +147,10 @@ func (s *trafficStatsServerImpl) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		s.revision++
 		s.Mutex.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method == http.MethodPut && r.URL.Path == "/bandwidth/policy" {
+		s.updateBandwidthPolicy(w, r)
 		return
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/kick" {
