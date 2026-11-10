@@ -14,6 +14,20 @@ import (
 	"github.com/apernet/hysteria/core/v2/server"
 )
 
+// Keep live stream objects out of testify's call history. Its cleanup
+// assertions format recorded arguments while the stream may still be closing.
+type streamSafeTrafficLogger struct {
+	*mocks.MockTrafficLogger
+}
+
+func (l streamSafeTrafficLogger) TraceStream(_ server.HyStream, _ *server.StreamStats) {
+	l.MethodCalled("TraceStream")
+}
+
+func (l streamSafeTrafficLogger) UntraceStream(_ server.HyStream) {
+	l.MethodCalled("UntraceStream")
+}
+
 // TestClientServerTrafficLoggerTCP tests that the traffic logger is correctly called for TCP connections,
 // and that the client is disconnected when the traffic logger returns false.
 func TestClientServerTrafficLoggerTCP(t *testing.T) {
@@ -29,7 +43,7 @@ func TestClientServerTrafficLoggerTCP(t *testing.T) {
 		Conn:          udpConn,
 		Outbound:      serverOb,
 		Authenticator: auth,
-		TrafficLogger: trafficLogger,
+		TrafficLogger: streamSafeTrafficLogger{trafficLogger},
 	})
 	assert.NoError(t, err)
 	defer s.Close()
@@ -62,7 +76,7 @@ func TestClientServerTrafficLoggerTCP(t *testing.T) {
 		return nil
 	})
 	serverOb.EXPECT().TCP(addr).Return(sobConn, nil).Once()
-	trafficLogger.EXPECT().TraceStream(mock.Anything, mock.Anything).Return().Once()
+	trafficLogger.On("TraceStream").Once()
 
 	conn, err := c.TCP(addr)
 	assert.NoError(t, err)
@@ -85,7 +99,7 @@ func TestClientServerTrafficLoggerTCP(t *testing.T) {
 	time.Sleep(1 * time.Second) // Need some time for the server to receive the data
 
 	// Client reads from server again but blocked
-	trafficLogger.EXPECT().UntraceStream(mock.Anything).Return().Once()
+	trafficLogger.On("UntraceStream").Once()
 	trafficLogger.EXPECT().LogTraffic("nobody", uint64(0), uint64(4)).Return(false).Once()
 	trafficLogger.EXPECT().LogOnlineState("nobody", false).Return().Once()
 	sobConnCh <- []byte("nope")

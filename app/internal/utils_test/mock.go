@@ -1,8 +1,10 @@
 package utils_test
 
 import (
+	"bytes"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/apernet/hysteria/core/v2/client"
@@ -13,12 +15,14 @@ type MockEchoHyClient struct{}
 func (c *MockEchoHyClient) TCP(addr string) (net.Conn, error) {
 	return &mockEchoTCPConn{
 		BufChan: make(chan []byte, 10),
+		done:    make(chan struct{}),
 	}, nil
 }
 
 func (c *MockEchoHyClient) UDP() (client.HyUDPConn, error) {
 	return &mockEchoUDPConn{
 		BufChan: make(chan mockEchoUDPPacket, 10),
+		done:    make(chan struct{}),
 	}, nil
 }
 
@@ -27,25 +31,31 @@ func (c *MockEchoHyClient) Close() error {
 }
 
 type mockEchoTCPConn struct {
-	BufChan chan []byte
+	BufChan   chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func (c *mockEchoTCPConn) Read(b []byte) (n int, err error) {
-	buf := <-c.BufChan
-	if buf == nil {
-		// EOF
+	select {
+	case buf := <-c.BufChan:
+		return copy(b, buf), nil
+	case <-c.done:
 		return 0, io.EOF
 	}
-	return copy(b, buf), nil
 }
 
 func (c *mockEchoTCPConn) Write(b []byte) (n int, err error) {
-	c.BufChan <- b
-	return len(b), nil
+	select {
+	case <-c.done:
+		return 0, net.ErrClosed
+	case c.BufChan <- bytes.Clone(b):
+		return len(b), nil
+	}
 }
 
 func (c *mockEchoTCPConn) Close() error {
-	close(c.BufChan)
+	c.closeOnce.Do(func() { close(c.done) })
 	return nil
 }
 
@@ -80,27 +90,30 @@ type mockEchoUDPPacket struct {
 }
 
 type mockEchoUDPConn struct {
-	BufChan chan mockEchoUDPPacket
+	BufChan   chan mockEchoUDPPacket
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func (c *mockEchoUDPConn) Receive() ([]byte, string, error) {
-	p := <-c.BufChan
-	if p.Data == nil {
-		// EOF
+	select {
+	case p := <-c.BufChan:
+		return p.Data, p.Addr, nil
+	case <-c.done:
 		return nil, "", io.EOF
 	}
-	return p.Data, p.Addr, nil
 }
 
-func (c *mockEchoUDPConn) Send(bytes []byte, s string) error {
-	c.BufChan <- mockEchoUDPPacket{
-		Data: bytes,
-		Addr: s,
+func (c *mockEchoUDPConn) Send(b []byte, addr string) error {
+	select {
+	case <-c.done:
+		return net.ErrClosed
+	case c.BufChan <- mockEchoUDPPacket{Data: bytes.Clone(b), Addr: addr}:
+		return nil
 	}
-	return nil
 }
 
 func (c *mockEchoUDPConn) Close() error {
-	close(c.BufChan)
+	c.closeOnce.Do(func() { close(c.done) })
 	return nil
 }
